@@ -1,6 +1,8 @@
 import uuid
 import json
 import pathlib
+import hashlib
+import random
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from app.agents.base_agent import BaseAgent
@@ -110,9 +112,31 @@ class EditorInChief(BaseAgent):
             신문 콘텐츠 dict
         """
         # 미래 날짜 계산
+        # 회차 간 실제 발행은 매일(하루 간격)이지만, 신문 '속' 미래 날짜는 회차마다
+        # 약 한 달씩(25~40일 랜덤) 벌린다. 하루 만에 직책·성과가 확 바뀌는 비현실을 없애고
+        # 이야기가 자연스럽게 진전되도록. 간격은 주문ID+회차로 시드를 고정해 항상 증가하고
+        # 재생성해도 동일하다(순서 꼬임·중복 방지).
         future_year = order.get("future_year", 2030)
-        years_ahead = future_year - scheduled_date.year
-        future_date = scheduled_date.replace(year=scheduled_date.year + years_ahead)
+
+        # 시리즈 1편 기준일을 future_year로 매핑 (이 회차 발행일에서 회차 오프셋 제거)
+        series_start = scheduled_date - timedelta(days=episode - 1)
+        years_ahead = future_year - series_start.year
+        try:
+            base_date = series_start.replace(year=series_start.year + years_ahead).date()
+        except ValueError:  # 2/29 → 평년 등 예외 방어
+            base_date = series_start.replace(
+                year=series_start.year + years_ahead, day=28
+            ).date()
+
+        # 2편부터 누적 간격(각 gap ≈ 한 달, 25~40일 랜덤, 시드 고정)
+        order_id = str(order.get("id", ""))
+        offset_days = 0
+        for gap_idx in range(1, episode):
+            seed = int(
+                hashlib.sha256(f"{order_id}:{gap_idx}".encode()).hexdigest()[:12], 16
+            )
+            offset_days += random.Random(seed).randint(25, 40)
+        future_date = base_date + timedelta(days=offset_days)
 
         weekdays_kr = ["월", "화", "수", "목", "금", "토", "일"]
         future_date_label = (
@@ -150,7 +174,7 @@ class EditorInChief(BaseAgent):
         return {
             **newspaper_content,
             "episode_number": episode,
-            "future_date": future_date.date(),
+            "future_date": future_date,
             "future_date_label": future_date_label,
             "episode_summary": summary,
             "sns_copy": sns_copy,

@@ -250,11 +250,15 @@ async def daily_publication_job():
     """매일 8시 실행되는 발행 배치 작업"""
     logger.info("daily_publication_job_start")
 
-    # 1) pending 스케줄 ID만 짧게 조회 (조회용 세션은 바로 반납)
+    # 1) pending 스케줄을 주문별로 묶어 조회 (조회용 세션은 바로 반납)
     async with get_db_session() as db:
         now = datetime.now(timezone.utc)
         result = await db.execute(
-            select(PublicationSchedule.id).where(
+            select(
+                PublicationSchedule.id,
+                PublicationSchedule.order_id,
+                PublicationSchedule.episode_number,
+            ).where(
                 and_(
                     PublicationSchedule.status == "pending",
                     PublicationSchedule.scheduled_at <= now,
@@ -262,30 +266,42 @@ async def daily_publication_job():
                 )
             )
         )
-        schedule_ids = [row[0] for row in result.all()]
+        rows = result.all()
 
-    if not schedule_ids:
+    if not rows:
         logger.info("daily_publication_no_pending")
         return
 
-    logger.info("daily_publication_processing", count=len(schedule_ids))
+    # 주문별로 그룹화하고 회차 순서대로 정렬
+    by_order: dict = {}
+    for sid, oid, ep in rows:
+        by_order.setdefault(oid, []).append((ep, sid))
+    for oid in by_order:
+        by_order[oid].sort(key=lambda t: t[0])
 
-    # 2) 각 스케줄을 독립 세션 + 세마포어(동시 상한)로 병렬 처리
+    logger.info(
+        "daily_publication_processing", count=len(rows), orders=len(by_order)
+    )
+
+    # 2) 같은 주문의 회차는 순차(순서 보장 → 메일도 순서대로), 주문끼리는 병렬.
+    #    전체 동시 생성량은 세마포어로 상한.
     orchestrator = EditorInChief()
     semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_GENERATIONS)
 
-    tasks = [
-        _process_schedule_in_own_session(sid, orchestrator, semaphore)
-        for sid in schedule_ids
-    ]
+    async def _process_order_series(episodes: list[tuple]):
+        for _ep, sid in episodes:
+            await _process_schedule_in_own_session(sid, orchestrator, semaphore)
+
+    tasks = [_process_order_series(eps) for eps in by_order.values()]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # 실패 카운트
+    # 실패 카운트 (주문 단위)
     failures = sum(1 for r in results if isinstance(r, Exception))
     logger.info(
         "daily_publication_job_done",
-        total=len(schedule_ids),
-        failures=failures,
+        total=len(rows),
+        orders=len(by_order),
+        order_failures=failures,
     )
 
 
