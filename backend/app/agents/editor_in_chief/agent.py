@@ -112,11 +112,10 @@ class EditorInChief(BaseAgent):
             신문 콘텐츠 dict
         """
         # 미래 날짜 계산
-        # 회차 간 실제 발행은 매일(하루 간격)이지만, 신문 '속' 미래 날짜는 넓게 벌린다.
-        # 정책(CEO 2026-08-09): 시리즈 '전체'가 1~2년 안에 분포하도록 회차를 나눠 배치한다.
-        #   - 편수가 적으면(무료 3편) 간격이 넓고, 많으면(30편) 촘촘. 총 아크는 항상 1~2년.
-        #   - 하루 만에 직책·성과가 확 바뀌는 비현실을 없애고 이야기가 단계적으로 진전되게.
-        #   - 모든 랜덤은 주문ID 시드로 고정 → 회차는 항상 증가하고 재생성해도 동일(순서 꼬임·중복 방지).
+        # 회차 간 실제 발행은 매일(하루 간격)이지만, 신문 '속' 미래 날짜는 회차마다
+        # 약 한 달씩(25~40일 랜덤) 벌린다. 하루 만에 직책·성과가 확 바뀌는 비현실을 없애고
+        # 이야기가 자연스럽게 진전되도록. 간격은 주문ID+회차로 시드를 고정해 항상 증가하고
+        # 재생성해도 동일하다(순서 꼬임·중복 방지). (연도 앵커=유저 선택 future_year, 제약 없음)
         future_year = order.get("future_year", 2030)
 
         # 시리즈 1편 기준일을 future_year로 매핑 (이 회차 발행일에서 회차 오프셋 제거)
@@ -129,27 +128,14 @@ class EditorInChief(BaseAgent):
                 year=series_start.year + years_ahead, day=28
             ).date()
 
+        # 2편부터 누적 간격(각 gap ≈ 한 달, 25~40일 랜덤, 시드 고정)
         order_id = str(order.get("id", ""))
-        total_eps = int(order.get("duration_days", 3) or 3)
-
-        # 시리즈 전체 아크: 주문별로 1~2년(365~730일) 중 하나로 고정
-        arc_seed = int(
-            hashlib.sha256((order_id + ":arc").encode()).hexdigest()[:12], 16
-        )
-        total_span = random.Random(arc_seed).randint(365, 730)
-
-        # 1편=기준일(offset 0), 이후 각 회차를 아크 위에 ±30% 지터로 누적 배치(항상 증가)
-        if total_eps > 1 and episode > 1:
-            base_gap = total_span / (total_eps - 1)
-            offset = 0.0
-            for gap_idx in range(1, episode):
-                seed = int(
-                    hashlib.sha256(f"{order_id}:{gap_idx}".encode()).hexdigest()[:12], 16
-                )
-                offset += base_gap * random.Random(seed).uniform(0.7, 1.3)
-            offset_days = round(offset)
-        else:
-            offset_days = 0
+        offset_days = 0
+        for gap_idx in range(1, episode):
+            seed = int(
+                hashlib.sha256(f"{order_id}:{gap_idx}".encode()).hexdigest()[:12], 16
+            )
+            offset_days += random.Random(seed).randint(25, 40)
         future_date = base_date + timedelta(days=offset_days)
 
         weekdays_kr = ["월", "화", "수", "목", "금", "토", "일"]
