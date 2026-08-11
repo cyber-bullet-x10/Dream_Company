@@ -26,7 +26,9 @@ const API_URL = getBaseUrl();
 export const api = axios.create({
   baseURL: `${API_URL}/api/v1`,
   headers: { "Content-Type": "application/json" },
-  timeout: 10000, // 10초 타임아웃
+  // Render 무료 티어는 15분 유휴 후 슬립 → 첫 요청 콜드스타트에 30~60초 소요.
+  // 타임아웃이 짧으면 그 첫 요청이 끊겨 "에러"로 보임. 콜드스타트를 견디도록 60초로.
+  timeout: 60000,
 });
 
 // 요청 인터셉터: Supabase 세션 토큰 자동 삽입

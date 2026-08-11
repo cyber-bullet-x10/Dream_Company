@@ -185,6 +185,21 @@ export default function OrderForm() {
 
   useEffect(() => {
     creditsApi.getBalance().then((r) => setCreditBalance(r.data.credits)).catch(() => {});
+
+    // 헤드라인 생성기(/headline)에서 넘어온 이름·꿈을 자동 채움 — 로그인 왕복을 거쳐도
+    // localStorage에 남아 있어 콜드 방문자가 다시 입력할 필요 없이 바로 시작할 수 있다.
+    try {
+      const raw = typeof window !== "undefined" ? localStorage.getItem("dream_prefill") : null;
+      if (raw) {
+        const p = JSON.parse(raw);
+        setForm((f) => ({
+          ...f,
+          dream_description: p.dream ? String(p.dream).slice(0, 500) : f.dream_description,
+          protagonist_name: p.name ? String(p.name).slice(0, 20) : f.protagonist_name,
+        }));
+        localStorage.removeItem("dream_prefill");
+      }
+    } catch { /* prefill 없거나 손상 시 무시 */ }
   }, []);
 
   const isFree = form.payment_type === "free";

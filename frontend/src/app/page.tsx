@@ -11,7 +11,30 @@ import TypingLanding from "@/components/TypingLanding";
 /* ─────────────────────────────────────────
    스플래시 로딩 화면
 ───────────────────────────────────────── */
+// 콜드스타트(무료 서버가 잠들어 첫 요청이 오래 걸릴 때) 위트 로딩 문구.
+// 브랜드 톤(편집국/기자단/윤전기). 빠른 로딩에선 안 보이도록 2.5초 후부터 순환.
+const SPLASH_WITTY = [
+  "편집국 기자단을 깨우는 중…",
+  "밤새 취재한 기자를 깨우는 중…",
+  "잠든 윤전기에 시동을 거는 중…",
+  "잉크를 데우고 1면을 펴는 중…",
+];
+
 function SplashScreen() {
+  const [msgIdx, setMsgIdx] = useState<number>(-1);
+  useEffect(() => {
+    // 2.5초 안에 뜨면(웜) 문구 없이 넘어감. 오래 걸리면 그때부터 순환 표시.
+    const start = setTimeout(() => setMsgIdx(0), 2500);
+    const cycle = setInterval(
+      () => setMsgIdx((i) => (i < 0 ? -1 : (i + 1) % SPLASH_WITTY.length)),
+      3500
+    );
+    return () => {
+      clearTimeout(start);
+      clearInterval(cycle);
+    };
+  }, []);
+
   return (
     <div className="h-dvh bg-[#1A1A1A] flex flex-col items-center justify-center gap-6">
       {/* 신문 이모지 bounce */}
@@ -35,6 +58,14 @@ function SplashScreen() {
           />
         ))}
       </div>
+
+      {/* 콜드스타트 위트 문구 (오래 걸릴 때만) */}
+      <p
+        className="text-[#8A8580] text-sm h-5 transition-opacity duration-500"
+        style={{ opacity: msgIdx >= 0 ? 1 : 0 }}
+      >
+        {msgIdx >= 0 ? SPLASH_WITTY[msgIdx] : ""}
+      </p>
 
       <style>{`
         @keyframes splashBounce {
@@ -73,7 +104,7 @@ function SkeletonCard() {
 function HowItWorks() {
   const steps = [
     { step: "01", title: "꿈을 의뢰해요", desc: "되고 싶은 모습을 자유롭게 적어주세요", icon: "✍️" },
-    { step: "02", title: "기자단이 써요", desc: "AI 기자단이 당신의 꿈을 신문 기사로 만들어요", icon: "📰" },
+    { step: "02", title: "기자단이 써요", desc: "전담 기자단이 당신의 꿈을 신문 기사로 만들어요", icon: "📰" },
     { step: "03", title: "매일 아침 도착해요", desc: "오전 8시, 미래의 당신 이야기가 신문으로 와요", icon: "☀️" },
   ];
   return (
@@ -104,16 +135,59 @@ function UserHome() {
   useEffect(() => {
     const s = recordActivity();
     setStreak(s);
-    ordersApi.list().then((r) => {
-      const list: Order[] = r.data || [];
-      setOrders(list);
-      const role = list[0]?.target_role || "";
-      setCompanionRole(role);
+
+    // 꿈 동료 배너 요청을 별도 함수로 분리 — 주문 로딩과 독립적으로(병렬로) 실행한다.
+    const ROLE_CACHE_KEY = "dream_companion_role";
+    const DATA_CACHE_KEY = "dream_companion_data";
+
+    // 지난 방문의 배너 값(count+role)을 첫 렌더에 즉시 표시 — 네트워크(~0.6초)를 기다리지
+    // 않고 다른 섹션과 '한 번에' 뜬다. 실제 값은 아래 fetch로 백그라운드 갱신.
+    try {
+      const cached =
+        typeof window !== "undefined" ? localStorage.getItem(DATA_CACHE_KEY) : null;
+      if (cached) {
+        const d = JSON.parse(cached);
+        if (typeof d.count === "number") setCompanionCount(d.count);
+        if (d.role) setCompanionRole(d.role);
+      }
+    } catch {}
+
+    const fetchCompanions = (role: string) =>
       fetch(`${getApiBaseUrl()}/api/v1/orders/dream-companions?role=${encodeURIComponent(role)}`)
         .then((res) => res.json())
-        .then((d) => setCompanionCount(typeof d.count === "number" ? d.count : null))
+        .then((d) => {
+          if (typeof d.count === "number") {
+            setCompanionCount(d.count);
+            if (role) setCompanionRole(role);
+            if (typeof window !== "undefined")
+              localStorage.setItem(
+                DATA_CACHE_KEY,
+                JSON.stringify({ count: d.count, role })
+              );
+          }
+        })
         .catch(() => {});
-    }).catch(() => {}).finally(() => setLoading(false));
+
+    // 재방문 유저: 캐시된 role로 배너를 즉시(병렬) 띄운다 — 주문 왕복을 기다리지 않음.
+    const cachedRole =
+      typeof window !== "undefined" ? localStorage.getItem(ROLE_CACHE_KEY) || "" : "";
+    if (cachedRole) fetchCompanions(cachedRole);
+
+    // 주문 목록은 병렬로 로드하고, 최신 role을 확보하면 캐시 갱신 + 필요 시에만 재요청.
+    ordersApi
+      .list()
+      .then((r) => {
+        const list: Order[] = r.data || [];
+        setOrders(list);
+        const role = list[0]?.target_role || "";
+        // 아직 배너 요청을 안 했거나(캐시 없음) role이 바뀐 경우에만 (재)요청.
+        if (!cachedRole || role !== cachedRole) {
+          if (typeof window !== "undefined") localStorage.setItem(ROLE_CACHE_KEY, role);
+          fetchCompanions(role);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, []);
 
   const activeOrders = orders.filter((o) => o.status === "active");
@@ -133,22 +207,24 @@ function UserHome() {
 
       <div className="pt-safe-header pb-safe-nav px-4 space-y-6 max-w-lg mx-auto">
 
-        {/* 꿈 동료 — 상단 즉시 노출, 탭하면 전용 공간으로 */}
-        {companionCount !== null && (
-          <Link href="/companions" className="block pt-4">
-            <div className="app-card app-card-tap px-4 py-3.5 flex items-center justify-between">
-              <div className="min-w-0">
-                <p className="text-[11px] text-[#A89F8C] tracking-[0.14em]">같은 미래를 향한 사람들</p>
-                <p className="text-[15px] text-[#1A1A1A] font-headline mt-1 truncate">
-                  {companionCount <= 1
+        {/* 꿈 동료 — 카드 틀과 라벨은 첫 프레임에 즉시 노출(정적), 숫자만 채워진다.
+            캐시가 있으면 숫자까지 즉시. 없으면 둘째 줄만 잠깐 은은한 안내 문구 → 값 도착 시 교체.
+            (레이아웃이 밀리거나 카드가 나중에 '팝인'하는 느낌 없음.) */}
+        <Link href="/companions" className="block pt-4">
+          <div className="app-card app-card-tap px-4 py-3.5 flex items-center justify-between">
+            <div className="min-w-0">
+              <p className="text-[11px] text-[#A89F8C] tracking-[0.14em]">같은 미래를 향한 사람들</p>
+              <p className="text-[15px] text-[#1A1A1A] font-headline mt-1 truncate">
+                {companionCount === null
+                  ? <span className="text-[#A89F8C]">함께 꿈꾸는 사람들을 세는 중…</span>
+                  : companionCount <= 1
                     ? <>당신은 <span className="font-bold">{companionRole || "이 꿈"}</span>의 첫 주인공</>
                     : <>나와 같은 꿈 <span className="font-bold">{companionCount.toLocaleString()}명</span>이 함께</>}
-                </p>
-              </div>
-              <span className="text-[#A89F8C] text-lg shrink-0 ml-2">→</span>
+              </p>
             </div>
-          </Link>
-        )}
+            <span className="text-[#A89F8C] text-lg shrink-0 ml-2">→</span>
+          </div>
+        </Link>
 
 
         {/* 스트릭 배너 */}

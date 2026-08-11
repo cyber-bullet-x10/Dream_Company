@@ -142,7 +142,19 @@ export default function HeadlinePage() {
               <p className="text-sm text-[#6B6869] mt-2 leading-relaxed">
                 3일 동안 무료로, {name.trim()}님의 미래가<br />신문으로 매일 이어집니다.
               </p>
-              <Link href="/order/new" className="app-btn-primary mt-4">
+              <Link
+                href="/order/new"
+                className="app-btn-primary mt-4"
+                onClick={() => {
+                  // 입력한 이름·꿈을 주문폼으로 전달(로그인 왕복을 거쳐도 유지) — 재입력 마찰 제거
+                  try {
+                    localStorage.setItem(
+                      "dream_prefill",
+                      JSON.stringify({ name: name.trim(), dream: dream.trim() })
+                    );
+                  } catch { /* 저장 실패해도 이동은 진행 */ }
+                }}
+              >
                 3일 무료로 시작하기 →
               </Link>
             </div>
