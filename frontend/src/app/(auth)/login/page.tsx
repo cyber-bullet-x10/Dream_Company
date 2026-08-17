@@ -37,10 +37,16 @@ function LoginForm() {
     setOauthLoading(provider);
     setError("");
     try {
+      // 진입 의도(next)를 OAuth 왕복 후에도 유지 — 헤드라인 생성기→3일무료(/order/new)
+      // 흐름이 카카오/구글 로그인에서 끊기던 문제 수정. (매직링크와 동일 처리)
+      const nextPath = searchParams.get("next");
+      const redirectTo = nextPath
+        ? `${window.location.origin}/auth/callback?next=${encodeURIComponent(nextPath)}`
+        : `${window.location.origin}/auth/callback`;
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider,
         options: {
-          redirectTo: `${window.location.origin}/auth/callback`,
+          redirectTo,
           skipBrowserRedirect: true,
         },
       });

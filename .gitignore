@@ -75,3 +75,15 @@ tmp/
 temp/
 
 .vercel
+
+# ============================
+# 인증 토큰/로그인 응답 (절대 커밋 금지)
+# ============================
+*login*.json
+*token*.json
+C:Temp*
+*session*.json
+
+# 쿠키/세션 덤프 (절대 커밋 금지)
+cookies*.txt
+*.cookies

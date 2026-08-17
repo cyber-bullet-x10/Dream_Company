@@ -186,11 +186,6 @@ export default function TypingLanding() {
         {phase !== "masthead" && (
           <div style={{ marginTop: "3rem", textAlign: "center", fontFamily: "system-ui, sans-serif", display: "flex", flexDirection: "column", alignItems: "center", gap: "1.1rem" }}>
             {phase !== "sent" && (
-              <a href="/headline" style={{ fontSize: "0.85rem", color: "#1A2744", textDecoration: "none", fontWeight: 600, borderBottom: "1.5px solid #C9A84C", paddingBottom: "2px" }}>
-                📰 30초 만에 내 미래 헤드라인 만들기 →
-              </a>
-            )}
-            {phase !== "sent" && (
               <a href="/login" style={{ fontSize: "0.8rem", color: "#888", textDecoration: "none", borderBottom: "1px solid #ccc", paddingBottom: "1px" }}>
                 이미 구독 중이에요 →
               </a>
