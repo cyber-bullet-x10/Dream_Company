@@ -3,16 +3,18 @@
 APScheduler를 사용해 pending 상태의 스케줄을 처리합니다.
 """
 import asyncio
+import uuid
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db_session
 from app.models.schedule import PublicationSchedule
 from app.models.order import Order
 from app.models.newspaper import Newspaper
+from app.models.sponsor import SponsorSlot
 from app.agents.editor_in_chief.agent import EditorInChief
 from app.agents.base_agent import reset_usage_tracking, get_usage_tracking
 from app.config import settings
@@ -124,6 +126,61 @@ async def process_single_schedule(
             # 토큰 실측 집계 읽기 (파이프라인 전체 합산)
             _usage = get_usage_tracking() or {"input": 0, "output": 0}
 
+            # 유료 슬롯 확보 + 차감.
+            #
+            # 이전에는 sponsor_slot_id를 한 번도 채우지 않아서, (1) 광고주가 구매한
+            # 슬롯이 영원히 소진되지 않고 (2) 스폰서 대시보드의 노출 수가 항상 0으로
+            # 집계됐다(sponsor.py의 Newspaper.sponsor_slot_id.in_(...) 조회).
+            # 여기서 연결해야 수익화 루프가 닫힌다.
+            #
+            # 차감은 조건부 UPDATE 한 방으로 한다. 읽어서 검사하고 빼는 방식은
+            # 안 된다 — 발행 배치는 스케줄마다 별도 세션으로 동시에 돌기 때문에
+            # (process_schedule_isolated 참고), 남은 수량이 1인 슬롯을 두 회차가
+            # 동시에 읽으면 둘 다 통과해 하나를 두 번 팔게 된다.
+            # WHERE remaining_quantity > 0 을 UPDATE에 실으면 행 잠금이 걸려
+            # 한쪽만 이긴다. RETURNING이 비면 진 쪽이다.
+            #
+            # 신문 INSERT보다 먼저 확보해야 「광고」 표기와 실제 차감이 어긋나지
+            # 않는다. 실패하면 같은 트랜잭션이 롤백되므로 수량도 함께 되돌아간다.
+            claimed_slot_id = None
+            raw_slot_id = sponsor_data.get("slot_id") if sponsor_data else None
+            if raw_slot_id:
+                try:
+                    slot_uuid = uuid.UUID(str(raw_slot_id))
+                except ValueError:
+                    slot_uuid = None
+                    logger.warning("sponsor_slot_id_invalid", slot_id=str(raw_slot_id))
+
+                if slot_uuid:
+                    claimed = await db.execute(
+                        update(SponsorSlot)
+                        .where(
+                            SponsorSlot.id == slot_uuid,
+                            SponsorSlot.remaining_quantity > 0,
+                        )
+                        .values(
+                            remaining_quantity=SponsorSlot.remaining_quantity - 1
+                        )
+                        .returning(SponsorSlot.remaining_quantity)
+                    )
+                    remaining = claimed.scalar_one_or_none()
+                    if remaining is not None:
+                        claimed_slot_id = slot_uuid
+                        logger.info(
+                            "sponsor_slot_consumed",
+                            slot_id=str(slot_uuid),
+                            company=sponsor_company,
+                            remaining=remaining,
+                        )
+                    else:
+                        # 매칭과 발행 사이에 다른 회차가 마지막 수량을 가져갔다.
+                        # 기사는 그대로 나가되 유료 표기는 하지 않는다.
+                        logger.info(
+                            "sponsor_slot_exhausted",
+                            slot_id=str(slot_uuid),
+                            company=sponsor_company,
+                        )
+
             # DB에 신문 저장
             newspaper = Newspaper(
                 order_id=order.id,
@@ -145,7 +202,9 @@ async def process_single_schedule(
                     "sponsor": sponsor_company,
                     "sponsor_industry": sponsor_data.get("industry", "") if sponsor_data else "",
                     "sponsor_reason": sponsor_data.get("reason", "") if sponsor_data else "",
-                    "sponsor_is_paid": sponsor_data.get("is_paid", False) if sponsor_data else False,
+                    # 실제로 슬롯을 확보했을 때만 유료다. 확보 실패한 회차를
+                    # 「광고」로 표기하면 지면 표기와 과금이 어긋난다.
+                    "sponsor_is_paid": claimed_slot_id is not None,
                 },
                 ai_model=newspaper_content.get("ai_model"),
                 generation_ms=newspaper_content.get("generation_ms"),
@@ -157,6 +216,7 @@ async def process_single_schedule(
                 status="published",
                 published_at=datetime.now(timezone.utc),
                 scheduled_at=schedule.scheduled_at,
+                sponsor_slot_id=claimed_slot_id,
             )
             db.add(newspaper)
             await db.flush()

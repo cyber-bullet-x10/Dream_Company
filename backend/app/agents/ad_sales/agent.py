@@ -33,7 +33,10 @@ class AdSales(BaseAgent):
         from sqlalchemy import select
         
         candidates = []
-        
+        # 회사명 → 슬롯 ID. LLM 응답에는 slot_id가 실려 오지 않으므로(환각 위험),
+        # 선택된 회사명을 이 표로 되짚어 실제 슬롯을 복원한다.
+        paid_slot_ids: dict[str, str] = {}
+
         # 1. Paid Sponsor (유료 광고주) 조회
         try:
             async with AsyncSessionLocal() as session:
@@ -47,6 +50,7 @@ class AdSales(BaseAgent):
                 paid_results = await session.execute(paid_query)
                 
                 for sponsor, slot in paid_results:
+                    paid_slot_ids[sponsor.company_name] = str(slot.id)
                     candidates.append({
                         "company_name": sponsor.company_name,
                         "industry": sponsor.industry,
@@ -130,13 +134,32 @@ class AdSales(BaseAgent):
             if start != -1 and end > start:
                 sponsors = json.loads(result_text[start:end])
                 logger.info("sponsor_match_success", count=len(sponsors))
-                return sponsors[:3]
+                return self._attach_slot_ids(sponsors[:3], paid_slot_ids)
 
         except Exception as e:
             logger.error("sponsor_match_failed", error=str(e))
 
         # 폴백: 점수/유사도 순으로 반환
-        return sorted(candidates, key=lambda x: x.get("is_paid", False), reverse=True)[:3]
+        fallback = sorted(
+            candidates, key=lambda x: x.get("is_paid", False), reverse=True
+        )[:3]
+        return self._attach_slot_ids(fallback, paid_slot_ids)
+
+    @staticmethod
+    def _attach_slot_ids(
+        sponsors: list[dict], paid_slot_ids: dict[str, str]
+    ) -> list[dict]:
+        """선택된 회사명을 실제 SponsorSlot과 다시 연결한다.
+
+        LLM이 `is_paid`를 잘못 붙여 보낼 수 있으므로 그 값을 믿지 않고,
+        유료 슬롯 표에 회사명이 있는지로 판정한다. 이 slot_id가 있어야
+        발행 시점에 슬롯 차감과 노출 집계가 이뤄진다.
+        """
+        for s in sponsors:
+            slot_id = paid_slot_ids.get(s.get("company_name", ""))
+            s["slot_id"] = slot_id
+            s["is_paid"] = slot_id is not None
+        return sponsors
 
     def _get_fallback_candidates(self, order: dict) -> list[dict]:
         """ChromaDB 연결 실패 시 폴백 후보"""
