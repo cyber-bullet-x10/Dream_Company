@@ -2,8 +2,12 @@ name: Daily Publish Cron
 
 on:
   schedule:
-    # 매일 23:00 UTC = 08:00 KST — Render 무료 티어가 잠들어 있어도
-    # 이 요청이 서비스를 깨우고 밀린 발행분까지 따라잡는다(멱등).
+    # 22:50 UTC = 07:50 KST — 발행 10분 전에 먼저 깨운다.
+    # 무료 티어는 다시 뜨는 데 30~60초 걸려서, 08:00에 깨우면 그만큼 발행이
+    # 밀리고 앱이 08:00 정각에 예약해둔 알림과 어긋난다.
+    - cron: "50 22 * * *"
+    # 23:00 UTC = 08:00 KST — 실제 발행. 위에서 이미 깨어 있으므로 제시간에 나간다.
+    # 멱등이라 두 번 호출돼도 같은 회차가 두 번 발행되지 않는다.
     - cron: "0 23 * * *"
   workflow_dispatch: {}
 
@@ -11,7 +15,17 @@ jobs:
   trigger-publish:
     runs-on: ubuntu-latest
     steps:
+      # 07:50 회차의 목적은 이것 하나다. DB를 건드리지 않는 엔드포인트라
+      # 컨테이너가 뜨는 즉시 응답한다. 실패해도 뒤 단계를 막지 않는다.
+      - name: Warm up backend
+        run: |
+          curl -sf "${{ secrets.BACKEND_URL }}/api/ping" --max-time 90 || true
+
+      # 발행은 08:00 회차(및 수동 실행)에서만 한다.
+      # 07:50에 발행 엔드포인트를 부르면 그날 스케줄이 아직 도래하지 않아
+      # 아무 일도 안 일어나긴 하지만, 의도를 코드에 남겨두는 편이 낫다.
       - name: Call backend cron endpoint
+        if: github.event.schedule != '50 22 * * *'
         run: |
           curl -sf -X POST "${{ secrets.BACKEND_URL }}/api/v1/cron/publish" \
             -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}" \
