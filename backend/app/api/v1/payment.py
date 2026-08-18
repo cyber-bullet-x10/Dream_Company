@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from app.database import get_db
 from app.models.order import Order
 from app.models.user import User
@@ -166,6 +167,114 @@ async def list_credit_packages():
         {"id": k, **v}
         for k, v in CREDIT_PACKAGES.items()
     ]
+
+
+# ─────────────────────────────────────────────
+# Apple In-App Purchase (iOS 전용)
+# ─────────────────────────────────────────────
+
+# App Store Connect에 등록할 상품 ID ↔ 크레딧 팩 매핑.
+# 상품 ID는 App Store Connect에서 만든 것과 정확히 일치해야 한다.
+APPLE_PRODUCTS: dict[str, str] = {
+    "com.dreamnewspaper.credits.starter": "starter",
+    "com.dreamnewspaper.credits.popular": "popular",
+    "com.dreamnewspaper.credits.power": "power",
+}
+
+
+class AppleVerifyRequest(BaseModel):
+    transaction_id: str
+    product_id: str
+
+
+@router.post("/apple/verify")
+async def verify_apple_purchase(
+    body: AppleVerifyRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """StoreKit 결제를 Apple에 확인하고 크레딧을 지급한다.
+
+    클라이언트가 보낸 transaction_id를 App Store Server API로 조회해 실제 결제인지,
+    우리 앱 것인지, 환불되지 않았는지 확인한 뒤에만 지급한다.
+
+    중복 지급은 `credit_transactions.external_txn_id`의 UNIQUE 제약으로 막는다.
+    조회 후 삽입 사이에 같은 요청이 두 번 들어와도 DB가 두 번째를 거부한다.
+    """
+    from app.services import apple_iap
+
+    package_id = APPLE_PRODUCTS.get(body.product_id)
+    if not package_id:
+        raise HTTPException(status_code=400, detail="알 수 없는 상품입니다.")
+
+    pkg = CREDIT_PACKAGES[package_id]
+    txn_key = apple_iap.new_txn_key(body.transaction_id)
+
+    # 이미 처리된 영수증이면 조용히 현재 잔액만 돌려준다.
+    # 네트워크 재시도로 같은 요청이 두 번 오는 건 정상이므로 오류로 만들지 않는다.
+    existing = await db.execute(
+        select(CreditTransaction).where(
+            CreditTransaction.external_txn_id == txn_key
+        )
+    )
+    if existing.scalar_one_or_none():
+        logger.info("apple_iap_already_granted", txn=txn_key)
+        return {
+            "status": "already_processed",
+            "credits": current_user.credits,
+            "credits_added": 0,
+        }
+
+    try:
+        txn = await apple_iap.fetch_transaction(body.transaction_id)
+        apple_iap.validate_transaction(txn, body.product_id)
+    except apple_iap.AppleVerificationError as e:
+        logger.warning("apple_iap_verify_failed", error=str(e), txn=txn_key)
+        raise HTTPException(status_code=402, detail=str(e))
+
+    credits_to_add = pkg["credits"]
+    result = await db.execute(select(User).where(User.id == current_user.id))
+    user = result.scalar_one()
+
+    credits_before = user.credits
+    user.credits += credits_to_add
+
+    db.add(CreditTransaction(
+        user_id=user.id,
+        type="purchase",
+        amount=credits_to_add,
+        credits_before=credits_before,
+        credits_after=user.credits,
+        description=f"{pkg['label']} 팩 ({credits_to_add}크레딧) — App Store",
+        external_txn_id=txn_key,
+    ))
+
+    try:
+        await db.commit()
+    except IntegrityError:
+        # UNIQUE 충돌 = 동시에 들어온 같은 영수증. 다른 요청이 이미 지급했다.
+        await db.rollback()
+        fresh = await db.execute(select(User).where(User.id == current_user.id))
+        u = fresh.scalar_one()
+        logger.info("apple_iap_race_resolved", txn=txn_key)
+        return {
+            "status": "already_processed",
+            "credits": u.credits,
+            "credits_added": 0,
+        }
+
+    logger.info(
+        "apple_iap_granted",
+        user_id=str(user.id),
+        credits_added=credits_to_add,
+        total=user.credits,
+        txn=txn_key,
+    )
+    return {
+        "status": "ok",
+        "credits": user.credits,
+        "credits_added": credits_to_add,
+    }
 
 
 @router.post("/credits/checkout")

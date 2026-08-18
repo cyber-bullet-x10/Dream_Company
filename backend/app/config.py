@@ -102,6 +102,14 @@ class Settings(BaseSettings):
     # ============================
     # Stripe 결제 (레거시)
     # ============================
+    # Apple In-App Purchase (iOS 앱 크레딧 결제).
+    # iOS는 디지털 재화를 Apple 결제로만 팔 수 있어(가이드라인 3.1.1) Stripe와 별개 경로가 필요하다.
+    APPLE_ISSUER_ID: str = ""
+    APPLE_KEY_ID: str = ""
+    APPLE_PRIVATE_KEY: str = ""          # .p8 파일 내용 (PEM 전문)
+    APPLE_BUNDLE_ID: str = "com.dreamnewspaper.app"
+    APPLE_ENVIRONMENT: str = "Production"  # Production | Sandbox
+
     STRIPE_SECRET_KEY: str = ""
     STRIPE_WEBHOOK_SECRET: str = ""
 
