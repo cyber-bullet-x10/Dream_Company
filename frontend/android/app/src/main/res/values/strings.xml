@@ -1,7 +1,0 @@
-<?xml version='1.0' encoding='utf-8'?>
-<resources>
-    <string name="app_name">꿈신문사</string>
-    <string name="title_activity_main">꿈신문사</string>
-    <string name="package_name">com.dreamnewspaper.app</string>
-    <string name="custom_url_scheme">com.dreamnewspaper.app</string>
-</resources>

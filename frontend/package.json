@@ -5,7 +5,6 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "build:app": "cross-env BUILD_MODE=export NEXT_PUBLIC_API_URL=https://api.dreamnewspaper.com next build",
     "build:web": "cross-env NEXT_PUBLIC_API_URL=https://api.dreamnewspaper.com next build",
     "start": "next start",
     "test": "vitest run",
@@ -13,24 +12,9 @@
     "test:coverage": "vitest run --coverage",
     "lint": "next lint",
     "type-check": "tsc --noEmit",
-    "icons": "node generate-icons.mjs",
-    "cap:sync": "npx cap sync",
-    "cap:android": "npx cap open android",
-    "cap:ios": "npx cap open ios",
-    "cap:build:android": "npx cap sync android",
-    "cap:build:ios": "npx cap sync ios"
+    "icons": "node generate-icons.mjs"
   },
   "dependencies": {
-    "@capacitor/android": "^7.0.0",
-    "@capacitor/app": "^7.0.0",
-    "@capacitor/core": "^7.0.0",
-    "@capacitor/haptics": "^7.0.0",
-    "@capacitor/ios": "^7.0.0",
-    "@capacitor/keyboard": "^7.0.0",
-    "@capacitor/local-notifications": "^7.0.0",
-    "@capacitor/push-notifications": "^7.0.0",
-    "@capacitor/splash-screen": "^7.0.0",
-    "@capacitor/status-bar": "^7.0.0",
     "@hookform/resolvers": "^3.9.0",
     "@supabase/supabase-js": "^2.96.0",
     "@tanstack/react-query": "^5.60.0",
@@ -47,7 +31,6 @@
     "zustand": "^5.0.0"
   },
   "devDependencies": {
-    "@capacitor/cli": "^7.0.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
