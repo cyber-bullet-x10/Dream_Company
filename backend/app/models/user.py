@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import String, Boolean, DateTime, Integer, func, Uuid, ARRAY
+from sqlalchemy import String, Boolean, DateTime, Integer, func, text, Uuid, ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
@@ -34,6 +34,16 @@ class User(Base):
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    # 독자 번호 — 가입 순서. 앱의 구독 증서·내 정보에 「제0142호 독자」로 찍힌다.
+    # 채번은 DB 시퀀스에 맡긴다. 파이썬에서 COUNT(*)+1로 계산하면
+    # 동시 가입 시 같은 번호가 두 명에게 나간다.
+    reader_no: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        unique=True,
+        server_default=text("nextval('users_reader_no_seq')"),
+    )
 
     # 크레딧 잔액
     credits: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")

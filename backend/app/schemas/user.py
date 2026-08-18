@@ -23,6 +23,7 @@ class UserResponse(BaseModel):
     role: str                       # 활성(active) role
     roles: list[str] = []           # 보유한 역할 집합 (멀티-role)
     is_active: bool
+    reader_no: Optional[int] = None  # 독자 번호 — 가입 순서. 마이그레이션 전 배포를 대비해 옵셔널로 둔다.
     credits: int = 0
     subscription_plan: Optional[str]
     subscription_expires_at: Optional[datetime]
