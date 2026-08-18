@@ -1,6 +1,6 @@
 """create infra_costs table
 
-Revision ID: a1b2c3d4e5f6
+Revision ID: d1e2f3a4b5c6
 Revises: f6a7b8c9d0e1
 Create Date: 2026-07-04
 
@@ -9,10 +9,14 @@ Create Date: 2026-07-04
 
 프로덕션(Supabase)에는 Supabase MCP로 직접 선적용함. 멱등(IF NOT EXISTS/ON
 CONFLICT DO NOTHING)이라 어느 환경에서 돌든/이미 적용돼 있든 안전.
+
+[정리 메모 2026-08-17] revision id가 `a1b2c3d4e5f6`로 다른 두 파일과
+겹쳐 있어 alembic이 체인을 풀지 못했다. Create Date 순서를 기준으로
+이 파일에 고유 id를 새로 주고 down_revision을 직전 마이그레이션에 다시 걸었다.
 """
 from alembic import op
 
-revision = 'a1b2c3d4e5f6'
+revision = 'd1e2f3a4b5c6'
 down_revision = 'f6a7b8c9d0e1'
 branch_labels = None
 depends_on = None
