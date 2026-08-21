@@ -33,8 +33,15 @@ async def process_single_schedule(
     schedule: PublicationSchedule,
     orchestrator: EditorInChief,
     semaphore: asyncio.Semaphore,
+    _pending_push: list[dict] | None = None,
 ):
-    """단일 스케줄 처리"""
+    """단일 스케줄 처리.
+
+    발행에 성공하면 푸시에 필요한 값을 `_pending_push` 에 담는다. 실제 발송은
+    호출부가 세션을 커밋한 뒤에 한다.
+    """
+    if _pending_push is None:
+        _pending_push = []
     async with semaphore:
         try:
             # 토큰 실측 집계 시작 (이 신문 1편 파이프라인 전체: 스폰서매칭+작성+요약+SNS)
@@ -226,6 +233,17 @@ async def process_single_schedule(
             schedule.newspaper_id = newspaper.id
             schedule.executed_at = datetime.now(timezone.utc)
 
+            # 푸시는 커밋 뒤에 보낸다. 여기서 바로 보내면 이후 단계가 실패해
+            # 롤백됐을 때 "오지 않은 신문"을 알린 꼴이 된다. 호출부가 세션을
+            # 닫은 다음 쏘도록 필요한 값만 넘긴다.
+            push_payload = {
+                "user_id": order.user_id,
+                "newspaper_id": newspaper.id,
+                "headline": newspaper.headline or "오늘의 꿈신문이 도착했습니다",
+                "episode": schedule.episode_number,
+                "target_role": order.target_role,
+            }
+
             await progress_store.emit(
                 str(schedule.order_id),
                 "done",
@@ -243,6 +261,7 @@ async def process_single_schedule(
                 episode=schedule.episode_number,
                 headline=newspaper.headline,
             )
+            _pending_push.append(push_payload)
 
             # 이메일 알림 발송
             try:
@@ -296,6 +315,8 @@ async def _process_schedule_in_own_session(
     병렬 실행하는 각 작업은 각자 세션을 연다. 실패는 process_single_schedule
     내부에서 스케줄 행에 기록되고, 세션은 정상 커밋된다(작업 간 격리).
     """
+    pending_push: list[dict] = []
+
     async with get_db_session() as db:
         result = await db.execute(
             select(PublicationSchedule).where(PublicationSchedule.id == schedule_id)
@@ -303,7 +324,63 @@ async def _process_schedule_in_own_session(
         schedule = result.scalar_one_or_none()
         if not schedule:
             return
-        await process_single_schedule(db, schedule, orchestrator, semaphore)
+        await process_single_schedule(
+            db, schedule, orchestrator, semaphore, pending_push
+        )
+
+    # 여기까지 왔으면 트랜잭션이 커밋됐다 — 신문이 실제로 존재한다.
+    for payload in pending_push:
+        try:
+            await send_publish_push(payload)
+        except Exception as e:
+            # 알림 실패가 발행을 되돌릴 이유는 없다. 신문은 이미 나갔다.
+            logger.warning("publish_push_failed", error=str(e))
+
+
+async def send_publish_push(payload: dict) -> None:
+    """발행된 신문을 그 의뢰자의 기기들로 알린다.
+
+    앱이 미리 예약해두던 로컬 알림과 달리 실제 발행 직후에 나가므로, 서버가
+    늦게 깨어나 발행이 밀려도 어긋나지 않는다. 그날 헤드라인도 실을 수 있다.
+
+    발송 결과가 「이 기기는 더 이상 유효하지 않다」면 그 토큰을 꺼둔다.
+    죽은 토큰에 계속 쏘면 APNs 가 발신자 평판을 깎는다.
+    """
+    from app.models.device_token import DeviceToken
+    from app.services import apns
+
+    if not apns.is_configured():
+        logger.info("publish_push_skipped_not_configured")
+        return
+
+    async with get_db_session() as db:
+        rows = await db.execute(
+            select(DeviceToken.token, DeviceToken.environment).where(
+                DeviceToken.user_id == payload["user_id"],
+                DeviceToken.is_active.is_(True),
+            )
+        )
+        targets = [(t, e) for t, e in rows.all()]
+
+    if not targets:
+        return
+
+    results = await apns.send(
+        targets,
+        title="오늘의 꿈신문이 도착했습니다",
+        body=payload["headline"],
+        newspaper_id=str(payload["newspaper_id"]),
+    )
+
+    dead = [r.token for r in results if r.should_deactivate]
+    if dead:
+        async with get_db_session() as db:
+            await db.execute(
+                update(DeviceToken)
+                .where(DeviceToken.token.in_(dead))
+                .values(is_active=False)
+            )
+        logger.info("device_tokens_deactivated", count=len(dead))
 
 
 async def daily_publication_job():

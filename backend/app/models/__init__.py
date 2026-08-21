@@ -11,6 +11,7 @@ from app.models.template import TemplateSeries, TemplateSlot, TemplateEpisode, T
 from app.models.credit_transaction import CreditTransaction
 from app.models.partnership_inquiry import PartnershipInquiry
 from app.models.infra_cost import InfraCost
+from app.models.device_token import DeviceToken
 
 __all__ = [
     "User",
@@ -30,4 +31,5 @@ __all__ = [
     "CreditTransaction",
     "PartnershipInquiry",
     "InfraCost",
+    "DeviceToken",
 ]

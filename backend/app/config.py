@@ -110,6 +110,14 @@ class Settings(BaseSettings):
     APPLE_BUNDLE_ID: str = "com.dreamnewspaper.app"
     APPLE_ENVIRONMENT: str = "Production"  # Production | Sandbox
 
+    # APNs 푸시 (신문 배달 알림).
+    # App Store Connect API 키와 다른 키다 — Certificates → Keys 에서
+    # APNs 를 켜고 발급받아야 한다.
+    APNS_KEY_ID: str = ""
+    APNS_TEAM_ID: str = ""
+    APNS_PRIVATE_KEY: str = ""            # .p8 파일 내용 (PEM 전문)
+    APNS_BUNDLE_ID: str = "com.dreamnewspaper.app"
+
     STRIPE_SECRET_KEY: str = ""
     STRIPE_WEBHOOK_SECRET: str = ""
 
