@@ -12,6 +12,7 @@ from app.models.credit_transaction import CreditTransaction
 from app.models.partnership_inquiry import PartnershipInquiry
 from app.models.infra_cost import InfraCost
 from app.models.device_token import DeviceToken
+from app.models.cheer import Cheer
 
 __all__ = [
     "User",
@@ -32,4 +33,5 @@ __all__ = [
     "PartnershipInquiry",
     "InfraCost",
     "DeviceToken",
+    "Cheer",
 ]

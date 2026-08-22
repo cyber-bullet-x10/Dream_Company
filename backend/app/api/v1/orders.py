@@ -3,6 +3,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
+from pydantic import BaseModel
+import uuid
+from sqlalchemy.exc import IntegrityError
 from app.database import get_db
 from app.models.order import Order
 from app.models.newspaper import Newspaper
@@ -285,21 +288,23 @@ async def get_dream_companions(role: str = "", db: AsyncSession = Depends(get_db
 
     async def _collect(q):
         res = await db.execute(q)
-        for asp, year in res.all():
+        for oid, asp, year in res.all():
             if asp and asp not in seen:
                 seen.add(asp)
-                real.append({"line": asp, "year": year})
+                # id 는 응원을 부칠 대상 식별자다. 불투명한 UUID라 그 자체로
+                # 신원을 드러내지 않으며, 이름·꿈 원문은 여전히 나가지 않는다.
+                real.append({"id": str(oid), "line": asp, "year": year})
 
     if role:
         await _collect(
-            select(Order.public_aspiration, Order.future_year)
+            select(Order.id, Order.public_aspiration, Order.future_year)
             .where(Order.target_role.ilike(f"%{role}%"), Order.public_aspiration.isnot(None))
             .order_by(Order.created_at.desc())
             .limit(5)
         )
     if len(real) < 5:
         await _collect(
-            select(Order.public_aspiration, Order.future_year)
+            select(Order.id, Order.public_aspiration, Order.future_year)
             .where(Order.public_aspiration.isnot(None))
             .order_by(Order.created_at.desc())
             .limit(5)
@@ -312,7 +317,9 @@ async def get_dream_companions(role: str = "", db: AsyncSession = Depends(get_db
             break
         if seed["line"] not in seen:
             seen.add(seed["line"])
-            aspirations.append(seed)
+            # 시드는 실재하는 의뢰가 아니므로 id 가 없다. 앱은 id 가 없는 줄에
+            # 응원 버튼을 그리지 않는다.
+            aspirations.append({**seed, "id": None})
 
     # 이번 주 신규(같은 분야)
     week_ago = datetime.now(timezone.utc) - timedelta(days=7)
@@ -382,3 +389,116 @@ def _order_to_response(order: Order, total: int, published: int) -> OrderRespons
         total_newspapers=total,
         published_newspapers=published,
     )
+
+# ============================
+# 응원 부치기 — 익명 커뮤니티
+# ============================
+
+class CheerCreate(BaseModel):
+    to_order_id: uuid.UUID
+    template_id: int
+
+
+@router.get("/dream-companions/templates")
+async def get_cheer_templates():
+    """편집국이 짜둔 응원 문구. 자유 입력은 받지 않는다."""
+    from app.services.cheer_templates import CHEER_TEMPLATES
+
+    return {
+        "templates": [
+            {"id": k, "text": v} for k, v in sorted(CHEER_TEMPLATES.items())
+        ]
+    }
+
+
+@router.post("/dream-companions/cheer", status_code=status.HTTP_201_CREATED)
+async def send_cheer(
+    body: CheerCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """같은 꿈을 꾸는 사람에게 응원을 부친다.
+
+    보내는 사람의 신원은 받는 쪽에 어떤 형태로도 전달되지 않는다. 저장되는
+    것은 문구 번호뿐이라 자유 텍스트가 흘러들 통로 자체가 없다.
+    """
+    from app.services import cheer_templates
+    from app.models.cheer import Cheer
+
+    if not cheer_templates.is_valid(body.template_id):
+        raise HTTPException(status_code=400, detail="없는 문구입니다.")
+
+    target = await db.get(Order, body.to_order_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="그 의뢰를 찾을 수 없습니다.")
+
+    # 자기 자신에게 보내면 「세 사람이 응원했다」가 자화자찬이 된다.
+    if target.user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="자신의 꿈에는 보낼 수 없습니다.")
+
+    db.add(Cheer(
+        from_user_id=current_user.id,
+        to_order_id=body.to_order_id,
+        template_id=body.template_id,
+    ))
+    try:
+        await db.commit()
+    except IntegrityError:
+        # 이미 보낸 상대다. 재시도로 두 번 눌린 것일 수 있으니 오류로 만들지
+        # 않고 조용히 넘어간다 — UNIQUE 제약이 숫자 부풀리기를 막아준다.
+        await db.rollback()
+        return {"status": "already_sent"}
+
+    return {"status": "sent"}
+
+
+@router.get("/dream-companions/inbox")
+async def get_cheer_inbox(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """내가 받은 응원. 보낸 사람은 집계에서만 존재한다.
+
+    숫자는 주장이고 받은 한 줄은 증거다. 이 편지함이 「혼자가 아니다」를
+    실제로 증명하는 유일한 자리다.
+    """
+    from app.models.cheer import Cheer
+    from app.services import cheer_templates
+
+    my_orders = (await db.execute(
+        select(Order.id).where(Order.user_id == current_user.id)
+    )).scalars().all()
+
+    if not my_orders:
+        return {"received": 0, "senders": 0, "recent": []}
+
+    received = await db.scalar(
+        select(func.count(Cheer.id)).where(Cheer.to_order_id.in_(my_orders))
+    ) or 0
+
+    # 「몇 사람이」를 말하려면 사람 수를 세야 한다. 같은 사람이 내 연재 둘에
+    # 보냈어도 한 사람이다.
+    senders = await db.scalar(
+        select(func.count(func.distinct(Cheer.from_user_id)))
+        .where(Cheer.to_order_id.in_(my_orders))
+    ) or 0
+
+    rows = (await db.execute(
+        select(Cheer.template_id, Cheer.created_at)
+        .where(Cheer.to_order_id.in_(my_orders))
+        .order_by(Cheer.created_at.desc())
+        .limit(5)
+    )).all()
+
+    return {
+        "received": received,
+        "senders": senders,
+        "recent": [
+            {
+                "template_id": tid,
+                "text": cheer_templates.text_of(tid),
+                "sent_at": created.isoformat(),
+            }
+            for tid, created in rows
+        ],
+    }
