@@ -21,6 +21,8 @@ import structlog
 log = structlog.get_logger()
 
 security = HTTPBearer()
+# 로그인하지 않아도 열리는 화면용. 토큰이 없거나 틀려도 401을 내지 않는다.
+optional_security = HTTPBearer(auto_error=False)
 
 # Supabase Auth Integration
 # Legacy Authlib registrations removed. Using Supabase OAuth via Frontend.
@@ -142,6 +144,24 @@ def require_role(*allowed_roles: str):
     return role_checker
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+async def get_current_user_optional(
+    credentials: HTTPAuthorizationCredentials | None = Depends(optional_security),
+    db: AsyncSession = Depends(get_db),
+) -> User | None:
+    """로그인했으면 사용자, 아니면 None.
+
+    꿈독자 명부처럼 **비로그인도 볼 수 있어야 하는 화면**에서, 로그인한
+    사람에게만 「당신」 표시나 응원 버튼을 다르게 주기 위해 쓴다.
+    토큰이 없거나 틀렸다고 401을 내면 화면 자체가 막히므로 조용히 None을 준다.
+    """
+    if credentials is None:
+        return None
+    try:
+        return await get_current_user(credentials=credentials, db=db)
+    except Exception:
+        return None
 
 
 @router.post("/register", response_model=UserResponse)

@@ -13,7 +13,7 @@ from app.models.schedule import PublicationSchedule
 from app.models.user import User
 from app.models.credit_transaction import CreditTransaction
 from app.schemas.order import OrderCreate, OrderResponse, OrderStartResponse
-from app.api.v1.auth import get_current_user
+from app.api.v1.auth import get_current_user, get_current_user_optional
 from app.core.exceptions import raise_not_found, raise_forbidden
 import uuid
 
@@ -266,7 +266,11 @@ async def get_dream_stats(
 
 
 @router.get("/dream-companions")
-async def get_dream_companions(role: str = "", db: AsyncSession = Depends(get_db)):
+async def get_dream_companions(
+    role: str = "",
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(get_current_user_optional),
+):
     """같은 미래를 향한 사람들 — 비식별 열망 목록 + 인원. 인증 불필요.
 
     개인정보 보호: 이름·원본 꿈 설명은 절대 반환하지 않는다. 저장된 비식별
@@ -288,23 +292,33 @@ async def get_dream_companions(role: str = "", db: AsyncSession = Depends(get_db
 
     async def _collect(q):
         res = await db.execute(q)
-        for oid, asp, year in res.all():
+        for oid, uid, asp, year in res.all():
             if asp and asp not in seen:
                 seen.add(asp)
                 # id 는 응원을 부칠 대상 식별자다. 불투명한 UUID라 그 자체로
                 # 신원을 드러내지 않으며, 이름·꿈 원문은 여전히 나가지 않는다.
-                real.append({"id": str(oid), "line": asp, "year": year})
+                mine = current_user is not None and uid == current_user.id
+                real.append({
+                    # 내 의뢰에는 응원 대상 id를 주지 않는다. 자기 자신에게
+                    # 보내는 버튼이 보이면 눌러봐야 거절당한다.
+                    "id": None if mine else str(oid),
+                    "line": asp,
+                    "year": year,
+                    # 내 줄에는 「당신」 표시를 붙인다 — 명부에 이름이 오른
+                    # 감각이 이 화면의 소속감을 만든다.
+                    "mine": mine,
+                })
 
     if role:
         await _collect(
-            select(Order.id, Order.public_aspiration, Order.future_year)
+            select(Order.id, Order.user_id, Order.public_aspiration, Order.future_year)
             .where(Order.target_role.ilike(f"%{role}%"), Order.public_aspiration.isnot(None))
             .order_by(Order.created_at.desc())
             .limit(5)
         )
     if len(real) < 5:
         await _collect(
-            select(Order.id, Order.public_aspiration, Order.future_year)
+            select(Order.id, Order.user_id, Order.public_aspiration, Order.future_year)
             .where(Order.public_aspiration.isnot(None))
             .order_by(Order.created_at.desc())
             .limit(5)
@@ -319,7 +333,7 @@ async def get_dream_companions(role: str = "", db: AsyncSession = Depends(get_db
             seen.add(seed["line"])
             # 시드는 실재하는 의뢰가 아니므로 id 가 없다. 앱은 id 가 없는 줄에
             # 응원 버튼을 그리지 않는다.
-            aspirations.append({**seed, "id": None})
+            aspirations.append({**seed, "id": None, "mine": False})
 
     # 이번 주 신규(같은 분야)
     week_ago = datetime.now(timezone.utc) - timedelta(days=7)
